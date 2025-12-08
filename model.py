@@ -66,19 +66,19 @@ class StructuralEncoder(nn.Module):
         h = F.relu(h)
         h = F.dropout(h, p=self.dropout, training=self.training)
         h = self.conv2(h, edge_index)
-    
+
         row, col = edge_index
         edge_feat = torch.cat([h[row], h[col]], dim=-1)
         edge_logits = self.edge_mlp(edge_feat)
         edge_probs = F.softmax(edge_logits, dim=-1)
-    
+
         prior_log_probs = self.prior_log_probs.to(edge_probs.device)
         kl_per_edge = (edge_probs * (edge_probs.log() - prior_log_probs)).sum(dim=-1)
         kl_mean = kl_per_edge.mean()
-    
+
         recon_log_prob = torch.log(edge_probs[:, 0] + edge_probs[:, 2] + 1e-12).mean()
         struct_loss = kl_mean - recon_log_prob
-    
+
         return edge_logits, edge_probs, struct_loss
 
 
@@ -152,12 +152,12 @@ class S2Layer(nn.Module):
         return H_new, sparse_loss
 
 
-
 class SpaM(nn.Module):
     def __init__(self, in_feats, hidden_dim, num_classes, num_layers=2, K=3, val_dim=64, sign_emb_dim=8, gamma=1.0, l1_lambda=0.1, dropout=0.5, use_gat=True):
         super().__init__()
         self.K = K
         self.dropout = dropout
+
         self.struct_encoder = StructuralEncoder(
             in_dim=in_feats,
             hidden_dim=hidden_dim,
@@ -165,8 +165,13 @@ class SpaM(nn.Module):
             use_gat=use_gat,
             dropout=dropout,
         )
+
+        self.backbone1 = GCNConv(in_feats, hidden_dim)
+        self.backbone2 = GCNConv(hidden_dim, hidden_dim)
+        self.backbone_proj = nn.Linear(in_feats, hidden_dim, bias=False)
+
         layers = []
-        in_dim = in_feats
+        in_dim = hidden_dim
         for _ in range(num_layers):
             layers.append(
                 S2Layer(
@@ -195,12 +200,22 @@ class SpaM(nn.Module):
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         y, train_mask = data.y, data.train_mask
+
+        h1 = self.backbone1(x, edge_index)
+        h1 = F.relu(h1)
+        h1 = F.dropout(h1, p=self.dropout, training=self.training)
+
+        h2 = self.backbone2(h1, edge_index)
+        h2 = h2 + self.backbone_proj(x)
+        h2 = F.relu(h2)
+        H0 = F.dropout(h2, p=self.dropout, training=self.training)
+
         edge_logits, edge_probs, struct_loss = self.struct_encoder(x, edge_index)
         logits_list = []
         sparse_losses = []
         for _ in range(self.K):
             edge_sign = self._sample_signs(edge_logits)
-            H = x
+            H = H0
             for layer in self.layers:
                 H, sparse_loss_layer = layer(H, edge_index, edge_sign)
                 H = F.relu(H)
@@ -238,7 +253,6 @@ lr = 1e-3
 patience = 200
 max_epochs = 2000
 
-
 model = SpaM(
     in_feats=dataset.num_node_features,
     hidden_dim=hidden_dim,
@@ -260,8 +274,6 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 
 best_val, best_test = 0.0, 0.0
 patience_ctr = 0
-
-
 warmup_epochs = 200
 
 for epoch in range(1, max_epochs + 1):
