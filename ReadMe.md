@@ -10,4 +10,4 @@ We propose **Sparse Bayesian Message Passing under Structural Uncertainty (SpaM)
 
 To train SpaM on nine heterophilic benchmarks ([dataset] from 0 to 8):
 - python model.py [dataset]
-- 0: RomanEmpire, 1: Minesweeper, ..., 8: Wisconsin
+- [dataset] $\rightarrow$ 0: RomanEmpire, 1: Minesweeper, ..., 8: Wisconsin
