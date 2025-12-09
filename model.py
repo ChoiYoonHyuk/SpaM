@@ -3,15 +3,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.datasets import Planetoid, WikipediaNetwork, Actor, WebKB
+from torch_geometric.datasets import WikipediaNetwork, Actor, WebKB
+from torch_geometric.datasets.heterophilous_graph_dataset import HeterophilousGraphDataset
 from torch_geometric.nn import GATConv, GCNConv
+
 
 def load_dataset(data_id: int):
     if data_id == 0:
-        dataset = Planetoid(root='/tmp/Cora', name='Cora')
+        dataset = HeterophilousGraphDataset(root='/tmp/RomanEmpire', name='Roman-empire')
     elif data_id == 1:
-        dataset = Planetoid(root='/tmp/Citeseer', name='Citeseer')
+        dataset = HeterophilousGraphDataset(root='/tmp/Minesweeper', name='Minesweeper')
     elif data_id == 2:
-        dataset = Planetoid(root='/tmp/Pubmed', name='Pubmed')
+        dataset = HeterophilousGraphDataset(root='/tmp/AmazonRatings', name='Amazon-ratings')
     elif data_id == 3:
         dataset = WikipediaNetwork(root='/tmp/Chameleon', name='chameleon')
     elif data_id == 4:
@@ -272,15 +275,9 @@ def main():
         data.train_mask = data.train_mask[:, 0]
         data.val_mask = data.val_mask[:, 0]
         data.test_mask = data.test_mask[:, 0]
-    if data_id in [0, 1, 2]:
-        prior_probs = torch.tensor([0.05, 0.15, 0.80], dtype=torch.float)
-        data.x = data.x - 1e-1
-        init_gamma = 0.2
-        l1_lambda = 0.02
-    else:
-        prior_probs = torch.tensor([1.0 / 3, 1.0 / 3, 1.0 / 3], dtype=torch.float)
-        init_gamma = 1.0
-        l1_lambda = 0.05
+    prior_probs = torch.tensor([1.0 / 3, 1.0 / 3, 1.0 / 3], dtype=torch.float)
+    init_gamma = 1.0
+    l1_lambda = 0.05
     hidden_dim = 64
     dropout = 0.5
     num_layers = 2
@@ -311,7 +308,7 @@ def main():
     best_val = 0.0
     best_test = 0.0
     patience_ctr = 0
-    warmup_epochs = 200
+    warmup_epochs = 50
     for epoch in range(1, max_epochs + 1):
         model.train()
         optimizer.zero_grad()
