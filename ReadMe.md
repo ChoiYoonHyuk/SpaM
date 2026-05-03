@@ -4,7 +4,7 @@
 
 ## Overview
 
-We propose **Sparse Bayesian Message Passing under Structural Uncertainty (SpaM)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
+We propose **Sparse Signed Message Passing via Predictive Marginalization (SpaM)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
 
 ## Execution
 
