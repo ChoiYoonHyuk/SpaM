@@ -9,5 +9,5 @@ We propose **Sparse Signed Message Passing via Predictive Marginalization (SpaM)
 ## Execution
 
 To train SpaM on nine heterophilic benchmarks ([dataset] from 0 to 8):
-- python model.py [dataset]
+- python main.py [dataset]
 - [dataset] $\rightarrow$ 0: RomanEmpire, 1: Minesweeper, ..., 8: Wisconsin
