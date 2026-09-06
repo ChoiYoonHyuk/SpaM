@@ -1,232 +1,220 @@
 import argparse
+import hashlib
+import importlib.metadata
+import json
+import math
 import random
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.datasets import Planetoid, WikipediaNetwork, Actor, WebKB
-from torch_geometric.datasets.heterophilous_graph_dataset import HeterophilousGraphDataset
-from torch_geometric.nn import GATConv, GCNConv
 
 
-def load_dataset(data_id: int):
-    if data_id == 0:
-        dataset = HeterophilousGraphDataset(root='/tmp/RomanEmpire', name='Roman-empire')
-    elif data_id == 1:
-        dataset = HeterophilousGraphDataset(root='/tmp/Minesweeper', name='Minesweeper')
-    elif data_id == 2:
-        dataset = HeterophilousGraphDataset(root='/tmp/AmazonRatings', name='Amazon-ratings')
-    elif data_id == 3:
-        dataset = WikipediaNetwork(root='/tmp/Chameleon', name='chameleon')
-    elif data_id == 4:
-        dataset = WikipediaNetwork(root='/tmp/Squirrel', name='squirrel')
-    elif data_id == 5:
-        dataset = Actor(root='/tmp/Actor')
-    elif data_id == 6:
-        dataset = WebKB(root='/tmp/Cornell', name='Cornell')
-    elif data_id == 7:
-        dataset = WebKB(root='/tmp/Texas', name='Texas')
-    else:
-        dataset = WebKB(root='/tmp/Wisconsin', name='Wisconsin')
-    return dataset, dataset.num_classes
+def stable_float(value: torch.Tensor) -> torch.Tensor:
+    if value.dtype in (torch.float16, torch.bfloat16):
+        return value.float()
+    return value
 
 
-def set_seed(seed: int = 0):
+def set_seed(seed: int = 0) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def graph_convolutions():
+    try:
+        from torch_geometric.nn import GATConv, GCNConv
+    except ImportError as error:
+        raise ImportError("Install torch-geometric to construct the graph encoders.") from error
+    return GATConv, GCNConv
+
+
+def load_dataset(data_id: int):
+    from torch_geometric.datasets import Actor, HeterophilousGraphDataset, WebKB, WikipediaNetwork
+
+    if data_id == 0:
+        dataset = HeterophilousGraphDataset(root="/tmp/RomanEmpire", name="Roman-empire")
+    elif data_id == 1:
+        dataset = HeterophilousGraphDataset(root="/tmp/Minesweeper", name="Minesweeper")
+    elif data_id == 2:
+        dataset = HeterophilousGraphDataset(root="/tmp/AmazonRatings", name="Amazon-ratings")
+    elif data_id == 3:
+        dataset = WikipediaNetwork(root="/tmp/Chameleon", name="chameleon")
+    elif data_id == 4:
+        dataset = WikipediaNetwork(root="/tmp/Squirrel", name="squirrel")
+    elif data_id == 5:
+        dataset = Actor(root="/tmp/Actor")
+    elif data_id == 6:
+        dataset = WebKB(root="/tmp/Cornell", name="Cornell")
+    elif data_id == 7:
+        dataset = WebKB(root="/tmp/Texas", name="Texas")
+    elif data_id == 8:
+        dataset = WebKB(root="/tmp/Wisconsin", name="Wisconsin")
+    else:
+        raise ValueError("data must be an integer from 0 through 8.")
+    return dataset, int(dataset.num_classes)
 
 
 class StructuralEncoder(nn.Module):
     def __init__(
         self,
-        in_dim,
-        hidden_dim,
-        edge_hidden_dim=64,
-        num_classes=0,
-        use_gat=True,
-        dropout=0.0,
-        use_labels=True,
-        prior_probs=None,
+        in_dim: int,
+        hidden_dim: int,
+        edge_hidden_dim: int = 128,
+        num_classes: int = 0,
+        use_gat: bool = False,
+        dropout: float = 0.5,
+        use_labels: bool = True,
     ):
         super().__init__()
+        if use_labels and num_classes <= 0:
+            raise ValueError("Label-aware encoding requires a positive num_classes.")
         self.dropout = dropout
         self.use_labels = use_labels
         self.num_classes = num_classes
-
-        label_dim = num_classes if (use_labels and num_classes > 0) else 0
-        feat_in = in_dim + label_dim
-
+        label_dim = num_classes if use_labels else 0
+        GATConv, GCNConv = graph_convolutions()
         if use_gat:
-            self.conv1 = GATConv(feat_in, hidden_dim, heads=1, concat=True)
+            self.conv1 = GATConv(in_dim + label_dim, hidden_dim, heads=1, concat=True)
             self.conv2 = GATConv(hidden_dim, hidden_dim, heads=1, concat=True)
         else:
-            self.conv1 = GCNConv(feat_in, hidden_dim)
+            self.conv1 = GCNConv(in_dim + label_dim, hidden_dim)
             self.conv2 = GCNConv(hidden_dim, hidden_dim)
-
         self.edge_mlp = nn.Sequential(
             nn.Linear(2 * hidden_dim, edge_hidden_dim),
             nn.ReLU(),
             nn.Linear(edge_hidden_dim, 3),
         )
 
-        if prior_probs is None:
-            prior = torch.tensor([1.0 / 3, 1.0 / 3, 1.0 / 3], dtype=torch.float)
-        else:
-            prior = prior_probs.float()
-            prior = prior / prior.sum()
-
-        self.register_buffer("prior_probs", prior)
-        self.register_buffer("prior_log_probs", torch.log(prior + 1e-12))
-
-    def forward(self, x, edge_index, y=None, train_mask=None):
-        if self.use_labels and self.num_classes > 0 and y is not None and train_mask is not None:
-            label_feat = torch.zeros(x.size(0), self.num_classes, device=x.device)
-            label_feat[train_mask] = F.one_hot(
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        y: torch.Tensor | None = None,
+        train_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.use_labels:
+            if y is None or train_mask is None:
+                raise ValueError("Label-aware encoding requires y and a training mask.")
+            if train_mask.ndim != 1 or train_mask.dtype != torch.bool:
+                raise ValueError("Select one Boolean training mask before calling the model.")
+            label_features = x.new_zeros((x.size(0), self.num_classes))
+            label_features[train_mask] = F.one_hot(
                 y[train_mask], num_classes=self.num_classes
-            ).float()
-            x_in = torch.cat([x, label_feat], dim=-1)
+            ).to(dtype=x.dtype)
+            x_in = torch.cat((x, label_features), dim=-1)
         else:
             x_in = x
-
         h = self.conv1(x_in, edge_index)
-        h = F.relu(h)
-        h = F.dropout(h, p=self.dropout, training=self.training)
+        h = F.dropout(F.relu(h), p=self.dropout, training=self.training)
         h = self.conv2(h, edge_index)
-
-        row, col = edge_index
-        edge_feat = torch.cat([h[row], h[col]], dim=-1)
-        edge_logits = self.edge_mlp(edge_feat)
-        edge_probs = F.softmax(edge_logits, dim=-1)
-
-        prior_log_probs = self.prior_log_probs.to(edge_probs.device)
-        kl_per_edge = (
-            edge_probs * (edge_probs.clamp_min(1e-12).log() - prior_log_probs)
-        ).sum(dim=-1)
-        kl_mean = kl_per_edge.mean()
-
-        p_edge_exist = edge_probs[:, 0] + edge_probs[:, 2]
-        recon_log_prob = p_edge_exist.clamp_min(1e-12).log().mean()
-
-        struct_loss = kl_mean - recon_log_prob
+        source, target = edge_index
+        edge_features = torch.cat((h[target], h[source]), dim=-1)
+        edge_logits = stable_float(self.edge_mlp(edge_features))
+        log_probs = F.log_softmax(edge_logits, dim=-1)
+        edge_probs = log_probs.exp()
+        if edge_logits.size(0) == 0:
+            struct_loss = edge_logits.sum() * 0.0
+        else:
+            kl = (edge_probs * (log_probs + math.log(3.0))).sum(dim=-1).mean()
+            log_activity = torch.logsumexp(log_probs[:, (0, 2)], dim=-1)
+            struct_loss = kl - log_activity.mean()
         return edge_logits, edge_probs, struct_loss
 
 
 class S2Layer(nn.Module):
     def __init__(
         self,
-        in_dim,
-        hidden_dim,
-        val_dim,
-        sign_emb_dim=8,
-        init_gamma=1.0,
-        l1_lambda=0.1,
-        dropout=0.0,
-        residual=True,
-        use_self=True,
+        in_dim: int,
+        hidden_dim: int,
+        val_dim: int,
+        init_gamma: float = 1.0,
+        l1_lambda: float = 0.05,
     ):
         super().__init__()
-        self.l1_lambda = l1_lambda
-        self.dropout = dropout
-        self.residual = residual
-        self.use_self = use_self
-
+        if l1_lambda < 0:
+            raise ValueError("The coefficient threshold must be nonnegative.")
+        self.l1_lambda = float(l1_lambda)
         self.W_v = nn.Linear(in_dim, val_dim, bias=False)
         self.W_t = nn.Linear(in_dim, val_dim, bias=False)
-        self.sign_emb = nn.Embedding(3, sign_emb_dim)
-
         self.alpha_mlp = nn.Sequential(
-            nn.Linear(2 * val_dim + sign_emb_dim, hidden_dim),
+            nn.Linear(2 * val_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
-
-        if use_self:
-            self.W_self = nn.Linear(in_dim, hidden_dim, bias=False)
-        else:
-            self.W_self = None
-
+        self.W_self = nn.Linear(in_dim, hidden_dim, bias=False)
         self.W_out = nn.Linear(val_dim, hidden_dim)
-        self.gamma_param = nn.Parameter(torch.tensor(init_gamma))
+        self.gamma_param = nn.Parameter(torch.tensor(float(init_gamma)))
 
-    def forward(self, H, edge_index, edge_sign):
-        n_nodes, _ = H.size()
-        row, col = edge_index
-
+    def forward(
+        self,
+        H: torch.Tensor,
+        edge_index: torch.Tensor,
+        role_gates: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if H.ndim != 2 or H.size(0) == 0:
+            raise ValueError("H must contain at least one node.")
+        if edge_index.ndim != 2 or edge_index.size(0) != 2:
+            raise ValueError("edge_index must have shape [2, num_routes].")
+        if role_gates.shape != (edge_index.size(1), 3):
+            raise ValueError("role_gates must have negative, inactive, positive columns.")
+        source, target = edge_index
         V = self.W_v(H)
         T = self.W_t(H)
-
-        t_i = T[col]
-        v_j = V[row]
-
-        sign_idx = (edge_sign.long() + 1).clamp(0, 2)
-        s_emb = self.sign_emb(sign_idx)
-
-        alpha_input = torch.cat([t_i, v_j, s_emb], dim=-1)
-        alpha = self.alpha_mlp(alpha_input).squeeze(-1)
-        alpha = F.softshrink(alpha, lambd=self.l1_lambda)
-        sparse_loss = alpha.abs().mean()
-
-        pos_mask = edge_sign > 0
-        neg_mask = edge_sign < 0
-
-        pos_agg = H.new_zeros(n_nodes, V.size(1))
-        neg_agg = H.new_zeros(n_nodes, V.size(1))
-
-        if pos_mask.any():
-            pos_msg = alpha[pos_mask].unsqueeze(-1) * v_j[pos_mask]
-            pos_idx = col[pos_mask]
-            pos_agg.index_add_(0, pos_idx, pos_msg)
-
-        if neg_mask.any():
-            neg_msg = alpha[neg_mask].abs().unsqueeze(-1) * v_j[neg_mask]
-            neg_idx = col[neg_mask]
-            neg_agg.index_add_(0, neg_idx, neg_msg)
-
-        gamma_val = F.softplus(self.gamma_param)
-        signed_agg = pos_agg - gamma_val * neg_agg
-
-        H_neigh = self.W_out(signed_agg)
-
-        if self.W_self is not None:
-            H_self = self.W_self(H)
-        else:
-            H_self = 0.0
-
-        H_new = H_neigh + H_self
-
-        if self.residual and H_new.shape == H.shape:
-            H_new = H_new + H
-
-        H_new = F.dropout(H_new, p=self.dropout, training=self.training)
+        values = stable_float(V[source])
+        scorer_input = torch.cat((T[target], V[source]), dim=-1)
+        scores = stable_float(self.alpha_mlp(scorer_input).squeeze(-1))
+        masses = F.softshrink(scores, lambd=self.l1_lambda).abs()
+        gates = role_gates.to(dtype=masses.dtype)
+        gamma = stable_float(F.softplus(self.gamma_param))
+        signed_gate = gates[:, 2] - gamma * gates[:, 0]
+        activity_gate = gates[:, 2] + gates[:, 0]
+        messages = (masses * signed_gate).unsqueeze(-1) * values
+        aggregate = values.new_zeros((H.size(0), V.size(1)))
+        aggregate = aggregate.index_add(0, target, messages)
+        H_new = self.W_out(aggregate) + self.W_self(H)
+        sparse_loss = (masses * activity_gate).sum() / H.size(0)
         return H_new, sparse_loss
 
 
 class SpaM(nn.Module):
     def __init__(
         self,
-        in_feats,
-        hidden_dim,
-        num_classes,
-        num_layers=2,
-        K=5,
-        val_dim=64,
-        sign_emb_dim=8,
-        init_gamma=1.0,
-        l1_lambda=0.1,
-        dropout=0.5,
-        use_gat=True,
-        prior_probs=None,
-        use_backbone_mp=True,
+        in_feats: int,
+        hidden_dim: int,
+        num_classes: int,
+        num_layers: int = 2,
+        K: int = 5,
+        K_test: int | None = None,
+        val_dim: int = 64,
+        init_gamma: float = 1.0,
+        l1_lambda: float = 0.05,
+        dropout: float = 0.5,
+        use_gat: bool = False,
+        use_backbone_mp: bool = True,
+        use_labels: bool = True,
+        temperature: float = 0.5,
     ):
         super().__init__()
-        self.K = K
-        self.dropout = dropout
+        if min(in_feats, hidden_dim, num_classes, num_layers, K, val_dim) <= 0:
+            raise ValueError("Dimensions, depth, and sample count must be positive.")
+        if K_test is not None and K_test <= 0:
+            raise ValueError("K_test must be positive.")
+        if not 0 <= dropout < 1 or temperature <= 0:
+            raise ValueError("Require 0 <= dropout < 1 and temperature > 0.")
+        self.K = int(K)
+        self.K_test = int(K if K_test is None else K_test)
+        self.dropout = float(dropout)
+        self.temperature = float(temperature)
         self.use_backbone_mp = use_backbone_mp
-
         self.struct_encoder = StructuralEncoder(
             in_dim=in_feats,
             hidden_dim=hidden_dim,
@@ -234,11 +222,10 @@ class SpaM(nn.Module):
             num_classes=num_classes,
             use_gat=use_gat,
             dropout=dropout,
-            use_labels=True,
-            prior_probs=prior_probs,
+            use_labels=use_labels,
         )
-
         if use_backbone_mp:
+            GATConv, _ = graph_convolutions()
             self.backbone1 = GATConv(in_feats, hidden_dim, heads=1, concat=True)
             self.backbone2 = GATConv(hidden_dim, hidden_dim, heads=1, concat=True)
             self.backbone_proj = nn.Linear(in_feats, hidden_dim, bias=False)
@@ -248,253 +235,373 @@ class SpaM(nn.Module):
             self.backbone2 = None
             self.backbone_proj = None
             self.mlp_backbone = nn.Sequential(
-                nn.Linear(in_feats, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
+                nn.Linear(in_feats, hidden_dim), nn.ReLU(), nn.Dropout(dropout)
             )
-
-        layers = []
-        in_dim_layer = hidden_dim
-        for _ in range(num_layers):
-            layers.append(
-                S2Layer(
-                    in_dim=in_dim_layer,
-                    hidden_dim=hidden_dim,
-                    val_dim=val_dim,
-                    sign_emb_dim=sign_emb_dim,
-                    init_gamma=init_gamma,
-                    l1_lambda=l1_lambda,
-                    dropout=dropout,
-                    residual=True,
-                    use_self=True,
-                )
-            )
-            in_dim_layer = hidden_dim
-        self.layers = nn.ModuleList(layers)
-
+        self.layers = nn.ModuleList(
+            S2Layer(hidden_dim, hidden_dim, val_dim, init_gamma, l1_lambda)
+            for _ in range(num_layers)
+        )
         self.classifier = nn.Linear(hidden_dim, num_classes)
 
-    @staticmethod
-    def _sample_signs(edge_logits, tau=0.5):
-        y_hard = F.gumbel_softmax(edge_logits, tau=tau, hard=True)
-        sign_values = edge_logits.new_tensor([-1.0, 0.0, 1.0])
-        edge_sign = (y_hard * sign_values).sum(dim=-1)
-        return edge_sign
-
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        y, train_mask = data.y, data.train_mask
-
+    def _backbone(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         if self.use_backbone_mp:
-            h1 = self.backbone1(x, edge_index)
-            h1 = F.relu(h1)
-            h1 = F.dropout(h1, p=self.dropout, training=self.training)
-            
-            h2 = self.backbone2(h1, edge_index)
-            h2 = h2 + self.backbone_proj(x)
-            h2 = F.relu(h2)
-            H0 = F.dropout(h2, p=self.dropout, training=self.training)
-        else:
-            h = self.mlp_backbone(x)
-            h = F.relu(h)
-            H0 = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.relu(self.backbone1(x, edge_index))
+            h = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.relu(self.backbone2(h, edge_index) + self.backbone_proj(x))
+            return F.dropout(h, p=self.dropout, training=self.training)
+        h = F.relu(self.mlp_backbone(x))
+        return F.dropout(h, p=self.dropout, training=self.training)
 
-        edge_logits, edge_probs, struct_loss = self.struct_encoder(
-            x, edge_index, y, train_mask
-        )
-
-        logits_list = []
-        sparse_losses = []
-
-        for _ in range(self.K):
-            edge_sign = self._sample_signs(edge_logits)
-            H = H0
-            sparse_loss_sum = 0.0
-
-            for layer in self.layers:
-                H, sparse_loss_layer = layer(H, edge_index, edge_sign)
-                H = F.relu(H)
-                sparse_loss_sum = sparse_loss_sum + sparse_loss_layer
-
-            sparse_loss_k = sparse_loss_sum / len(self.layers)
-            logits_k = self.classifier(H)
-
-            logits_list.append(logits_k)
-            sparse_losses.append(sparse_loss_k)
-
-        logits_stack = torch.stack(logits_list, dim=0)
-        probs_stack = F.softmax(logits_stack, dim=-1)
-        probs_mc = probs_stack.mean(dim=0)
-        logits_mc = (probs_mc + 1e-12).log()
-
+    def _sample_roles(self, edge_logits: torch.Tensor) -> torch.Tensor:
+        if edge_logits.size(0) == 0:
+            return edge_logits.clone()
         if self.training:
-            probs_train = probs_mc[train_mask]
-            y_train = y[train_mask]
-            cls_loss = F.nll_loss((probs_train + 1e-12).log(), y_train)
+            return F.gumbel_softmax(
+                edge_logits, tau=self.temperature, hard=True, dim=-1
+            )
+        indices = torch.distributions.Categorical(logits=edge_logits).sample()
+        return F.one_hot(indices, num_classes=3).to(dtype=edge_logits.dtype)
+
+    def forward(
+        self,
+        data: Any,
+        K: int | None = None,
+        return_details: bool = False,
+    ) -> dict[str, Any]:
+        x, edge_index = data.x, data.edge_index
+        y = getattr(data, "y", None)
+        train_mask = getattr(data, "train_mask", None)
+        if train_mask is not None and (train_mask.ndim != 1 or train_mask.dtype != torch.bool):
+            raise ValueError("Select one Boolean training mask before calling the model.")
+        samples = (self.K if self.training else self.K_test) if K is None else int(K)
+        if samples <= 0:
+            raise ValueError("The number of branches must be positive.")
+        H0 = self._backbone(x, edge_index)
+        edge_logits, edge_probs, struct_loss = self.struct_encoder(x, edge_index, y, train_mask)
+        branch_log_probs = []
+        sparse_losses = []
+        sampled_gates = []
+        for _ in range(samples):
+            role_gates = self._sample_roles(edge_logits)
+            H = H0
+            layer_penalties = []
+            for layer in self.layers:
+                H, sparse_layer = layer(H, edge_index, role_gates)
+                H = F.dropout(F.relu(H), p=self.dropout, training=self.training)
+                layer_penalties.append(sparse_layer)
+            logits = stable_float(self.classifier(H))
+            branch_log_probs.append(F.log_softmax(logits, dim=-1))
+            sparse_losses.append(torch.stack(layer_penalties).mean())
+            if return_details:
+                sampled_gates.append(role_gates)
+        log_probs_stack = torch.stack(branch_log_probs, dim=0)
+        log_probs_mc = torch.logsumexp(log_probs_stack, dim=0) - math.log(samples)
+        if self.training:
+            if y is None or train_mask is None or not bool(train_mask.any()):
+                raise ValueError("Training requires labels and a nonempty training mask.")
+            cls_loss = F.nll_loss(log_probs_mc[train_mask], y[train_mask])
         else:
             cls_loss = None
-
-        sparse_loss = torch.stack(sparse_losses).mean()
-
-        return {
-            "logits": logits_mc,
+        result = {
+            "logits": log_probs_mc,
+            "probs": log_probs_mc.exp(),
             "cls_loss": cls_loss,
-            "sparse_loss": sparse_loss,
+            "sparse_loss": torch.stack(sparse_losses).mean(),
             "struct_loss": struct_loss,
         }
+        if return_details:
+            result.update(
+                edge_logits=edge_logits,
+                edge_probs=edge_probs,
+                branch_log_probs=log_probs_stack,
+                role_gates=torch.stack(sampled_gates),
+                initial_features=H0,
+            )
+        return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description='SpaM Node Classification (fast version)')
-    parser.add_argument('data', type=int, help='data selector')
-    parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--use_amp', action='store_true', help='use mixed precision (CUDA only)')
-    parser.add_argument('--eval_every', type=int, default=1, help='eval every N epochs (1 = every epoch)')
-    parser.add_argument('--use_gat', action='store_true', help='use GAT in StructuralEncoder (default: False)', default=False)
-    args = parser.parse_args()
+def total_objective(
+    output: dict[str, Any],
+    lambda_sp: float = 0.01,
+    lambda_st: float = 0.1,
+) -> torch.Tensor:
+    if output["cls_loss"] is None:
+        raise ValueError("The total training objective requires training-mode outputs.")
+    return output["cls_loss"] + lambda_sp * output["sparse_loss"] + lambda_st * output["struct_loss"]
 
-    set_seed(args.seed)
 
-    data_id = args.data
-    dataset, num_class = load_dataset(data_id)
+def split_count(data: Any) -> int:
+    masks = [data.train_mask, data.val_mask, data.test_mask]
+    if any(mask.dtype != torch.bool or mask.ndim not in (1, 2) for mask in masks):
+        raise ValueError("Dataset masks must be one- or two-dimensional Boolean tensors.")
+    counts = [1 if mask.ndim == 1 else mask.size(1) for mask in masks]
+    if len(set(counts)) != 1 or counts[0] == 0:
+        raise ValueError("Training, validation, and test masks must have matching split counts.")
+    return counts[0]
 
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    data = dataset[0].to(device)
-    data.x = F.normalize(data.x, p=2, dim=-1)
 
-    if data.train_mask.dim() == 2:
-        data.train_mask = data.train_mask[:, 0]
-        data.val_mask = data.val_mask[:, 0]
-        data.test_mask = data.test_mask[:, 0]
+def select_split(data: Any, split_idx: int):
+    count = split_count(data)
+    if not 0 <= split_idx < count:
+        raise ValueError(f"split_idx must be between 0 and {count - 1}.")
+    selected = data.clone()
+    masks = []
+    for name in ("train_mask", "val_mask", "test_mask"):
+        mask = getattr(selected, name)
+        mask = mask if mask.ndim == 1 else mask[:, split_idx]
+        if mask.numel() != selected.x.size(0) or not bool(mask.any()):
+            raise ValueError(f"{name} must be nonempty and aligned with node features.")
+        setattr(selected, name, mask)
+        masks.append(mask)
+    if bool(((masks[0] & masks[1]) | (masks[0] & masks[2]) | (masks[1] & masks[2])).any()):
+        raise ValueError("Training, validation, and test masks must be disjoint.")
+    return selected
 
-    prior_probs = torch.tensor([1.0 / 3, 1.0 / 3, 1.0 / 3], dtype=torch.float)
 
-    init_gamma = 1.0
-    l1_lambda = 0.05
-    hidden_dim = 128
-    dropout = 0.5
-    num_layers = 2
-    K = 5
-    lambda_sp = 1e-2
-    lambda_st = 1e-1
-    lr = 1e-3
-    patience = 200
-    max_epochs = 2000
+@torch.no_grad()
+def predict(
+    model: nn.Module,
+    data: Any,
+    samples: int,
+    seed: int,
+    use_amp: bool = False,
+) -> torch.Tensor:
+    device = data.x.device
+    cuda_devices = []
+    if device.type == "cuda":
+        cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()]
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.random.default_generator.manual_seed(seed)
+            if device.type == "cuda":
+                with torch.cuda.device(device):
+                    torch.cuda.manual_seed(seed)
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                output = model(data, K=samples)
+            return output["logits"].detach()
+    finally:
+        model.train(was_training)
 
-    use_backbone_mp = not (data_id in [3, 4])
 
-    model = SpaM(
-        in_feats=dataset.num_node_features,
-        hidden_dim=hidden_dim,
-        num_classes=num_class,
-        num_layers=num_layers,
-        K=K,
-        val_dim=64,
-        sign_emb_dim=8,
-        init_gamma=init_gamma,
-        l1_lambda=l1_lambda,
-        dropout=dropout,
-        use_gat=args.use_gat,
-        prior_probs=prior_probs,
-        use_backbone_mp=use_backbone_mp,
-    ).to(device)
+def accuracy(log_probs: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
+    return float((log_probs[mask].argmax(dim=-1) == labels[mask]).float().mean().item())
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=50, min_lr=1e-5
-    )
 
-    use_amp = args.use_amp and (device.type == 'cuda')
-    if use_amp:
-        from torch.cuda.amp import autocast, GradScaler
-        scaler = GradScaler()
+def final_metrics(log_probs: torch.Tensor, data: Any, data_id: int) -> dict[str, Any]:
+    test_acc = accuracy(log_probs, data.y, data.test_mask)
+    nll = float(F.nll_loss(log_probs[data.test_mask], data.y[data.test_mask]).item())
+    if data_id == 1:
+        from sklearn.metrics import roc_auc_score
+
+        y_test = data.y[data.test_mask].detach().cpu().numpy()
+        if np.unique(y_test).size != 2:
+            raise ValueError("Minesweeper test ROC-AUC requires both classes in the test mask.")
+        probabilities = log_probs[data.test_mask, 1].exp().float().cpu().numpy()
+        score = float(roc_auc_score(y_test, probabilities))
+        metric = "ROC-AUC"
     else:
-        from contextlib import contextmanager
+        score = test_acc
+        metric = "Accuracy"
+    return {
+        "test_metric": metric,
+        "test_score_percent": 100.0 * score,
+        "test_accuracy_percent": 100.0 * test_acc,
+        "test_nll": nll,
+    }
 
-        @contextmanager
-        def autocast(*_args, **_kwargs):
-            yield
 
-        class DummyScaler:
-            def scale(self, x):
-                return x
-            def step(self, opt):
-                opt.step()
-            def update(self):
-                pass
-
-        scaler = DummyScaler()
-
-    best_val = 0.0
-    best_test = 0.0
+def train_one_split(
+    data: Any,
+    num_classes: int,
+    split_idx: int,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> dict[str, Any]:
+    seed = args.seed + split_idx
+    eval_seed = args.eval_seed + split_idx
+    set_seed(seed)
+    model = SpaM(
+        in_feats=data.x.size(1),
+        hidden_dim=args.hidden_dim,
+        num_classes=num_classes,
+        num_layers=args.num_layers,
+        K=args.K_train,
+        K_test=args.K_test,
+        val_dim=args.val_dim,
+        init_gamma=1.0,
+        l1_lambda=args.lambda_sc,
+        dropout=args.dropout,
+        use_gat=args.use_gat,
+        use_backbone_mp=args.data not in (3, 4),
+        use_labels=not args.feature_only,
+        temperature=args.temperature,
+    ).to(data.x.device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=50, min_lr=1e-5
+    )
+    use_amp = args.use_amp and data.x.device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    best_val = -math.inf
     best_state = None
-    patience_ctr = 0
-    warmup_epochs = 100
-    log_every = 50
-
-    for epoch in range(1, max_epochs + 1):
+    best_epoch = 0
+    for epoch in range(1, args.max_epochs + 1):
         model.train()
-        optimizer.zero_grad()
-
-        with autocast(device_type='cuda' if device.type == 'cuda' else 'cpu',
-                      dtype=torch.float16 if device.type == 'cuda' else torch.bfloat16):
-            out = model(data)
-            loss_cls = out["cls_loss"]
-            loss_sparse = out["sparse_loss"]
-            loss_struct = out["struct_loss"]
-
-            if epoch <= warmup_epochs:
-                loss = loss_cls
-            else:
-                loss = loss_cls + lambda_sp * loss_sparse + lambda_st * loss_struct
-
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=data.x.device.type, dtype=torch.float16, enabled=use_amp):
+            output = model(data)
+            loss = total_objective(output, args.lambda_sp, args.lambda_st)
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError(f"Nonfinite objective at split {split_idx}, epoch {epoch}.")
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-
-        logits_all = out["logits"].detach()
-        pred = logits_all.argmax(dim=1)
-
-        val_acc = pred[data.val_mask].eq(data.y[data.val_mask]).float().mean().item()
-        test_acc = pred[data.test_mask].eq(data.y[data.test_mask]).float().mean().item()
-
+        loss_value = float(loss.detach().item())
+        del output, loss
+        should_evaluate = epoch % args.eval_every == 0 or epoch == args.max_epochs
+        if not should_evaluate:
+            continue
+        log_probs = predict(model, data, args.K_test, eval_seed, use_amp)
+        val_acc = accuracy(log_probs, data.y, data.val_mask)
+        del log_probs
         scheduler.step(val_acc)
-
-        if val_acc > best_val:
+        improved = val_acc > best_val
+        if improved:
             best_val = val_acc
-            if test_acc > best_test:
-                best_test = test_acc
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            patience_ctr = 0
-        else:
-            patience_ctr += 1
-            if patience_ctr > patience:
-                print(f"Early stopping at epoch {epoch}")
-                break
-
-        if epoch % log_every == 0 or val_acc == best_val:
+            best_epoch = epoch
+            best_state = {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
+        if improved or epoch % args.log_every == 0:
             print(
-                f"Epoch {epoch:04d} | Loss: {loss.item():.4f} | "
-                f"L_cls: {loss_cls.item():.4f} | L_sp: {loss_sparse.item():.4f} | "
-                f"L_st: {loss_struct.item():.4f} | "
-                f"Val: {val_acc:.4f} | Test: {test_acc:.4f} | Best Val: {best_val:.4f} | Best Test: {best_test:.4f}"
+                f"Split {split_idx:02d} | Epoch {epoch:04d} | Loss {loss_value:.6f} | "
+                f"Val {100 * val_acc:.4f} | Best Val {100 * best_val:.4f}",
+                flush=True,
             )
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    model.to(device)
+        if epoch >= args.min_epochs and epoch - best_epoch >= args.patience:
+            break
+    if best_state is None:
+        raise RuntimeError("No validation checkpoint was produced.")
+    model.load_state_dict(best_state, strict=True)
     model.eval()
+    log_probs = predict(model, data, args.K_test, eval_seed, use_amp)
+    result = {
+        "split_idx": split_idx,
+        "seed": seed,
+        "eval_seed": eval_seed,
+        "best_epoch": best_epoch,
+        "selection_validation_accuracy_percent": 100.0 * best_val,
+        "final_validation_accuracy_percent": 100.0 * accuracy(log_probs, data.y, data.val_mask),
+        **final_metrics(log_probs, data, args.data),
+    }
+    config = {
+        **vars(args),
+        "resolved_device": str(data.x.device),
+        "resolved_use_amp": use_amp,
+        "structural_encoder": "GATConv" if args.use_gat else "GCNConv",
+        "backbone": "MLP" if args.data in (3, 4) else "two-layer GAT with feature projection",
+        "input_modality": "feature-only" if args.feature_only else "label-aware",
+        "role_coordinate_order": ["negative", "inactive", "positive"],
+        "decoder_input_order": ["target", "source"],
+        "signed_layer_residual": False,
+        "backbone_dropout_shared_across_branches": True,
+        "signed_dropout_site": "after each signed-layer ReLU, independent across branches",
+        "mlp_backbone_dropout_sites": "inside the MLP and at the shared backbone output",
+        "regularizers_active_from_epoch": 1,
+        "min_epochs_semantics": "early-stopping floor, not classification-only warm-up",
+        "graph_preprocessing": "L2-normalized features and coalesced supplied directed routes",
+        "validation_sampling": "fixed evaluation seed, training RNG restored after evaluation",
+        "checkpoint_selection": "strict improvement in validation accuracy",
+        "num_nodes": int(data.x.size(0)),
+        "num_observed_directed_routes": int(data.edge_index.size(1)),
+        "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "torch_version": str(torch.__version__),
+        "torch_geometric_version": importlib.metadata.version("torch-geometric"),
+    }
+    checkpoint_path = output_dir / f"split_{split_idx:02d}_seed_{seed}.pt"
+    torch.save({"state_dict": best_state, "config": config, "result": result}, checkpoint_path)
+    result["checkpoint"] = str(checkpoint_path)
+    (output_dir / f"split_{split_idx:02d}_seed_{seed}.json").write_text(
+        json.dumps({"config": config, "result": result}, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+    return result
 
-    with torch.no_grad():
-        out_eval = model(data)
-        logits_eval = out_eval["logits"]
-        pred = logits_eval.argmax(dim=1)
-        final_val = pred[data.val_mask].eq(data.y[data.val_mask]).float().mean().item()
-        final_test = pred[data.test_mask].eq(data.y[data.test_mask]).float().mean().item()
 
-    print(f"Final Best Val: {final_val:.4f} | Final Test (best-val model, eval mode): {final_test:.4f}")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="SpaM with manuscript-aligned signed propagation")
+    parser.add_argument("data", type=int, choices=range(9))
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--eval_seed", type=int, default=100000)
+    parser.add_argument("--use_amp", action="store_true")
+    parser.add_argument("--use_gat", action="store_true")
+    parser.add_argument("--feature_only", action="store_true")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--split_idx", type=int, default=0)
+    group.add_argument("--all_splits", action="store_true")
+    parser.add_argument("--K_train", type=int, default=5)
+    parser.add_argument("--K_test", type=int, default=5)
+    parser.add_argument("--hidden_dim", type=int, default=128)
+    parser.add_argument("--val_dim", type=int, default=64)
+    parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--dropout", type=float, default=0.5)
+    parser.add_argument("--lambda_sc", type=float, default=0.05)
+    parser.add_argument("--lambda_sp", type=float, default=0.01)
+    parser.add_argument("--lambda_st", type=float, default=0.1)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--max_epochs", type=int, default=2000)
+    parser.add_argument("--min_epochs", type=int, default=0)
+    parser.add_argument("--patience", type=int, default=200)
+    parser.add_argument("--eval_every", type=int, default=1)
+    parser.add_argument("--log_every", type=int, default=50)
+    parser.add_argument("--output_dir", default="spam_runs")
+    args = parser.parse_args()
+    positive = (args.max_epochs, args.patience, args.eval_every, args.log_every, args.K_train, args.K_test)
+    if min(positive) <= 0 or args.min_epochs < 0:
+        parser.error("Epoch limits, intervals, patience, and sample counts must be positive.")
+    if min(args.lambda_sc, args.lambda_sp, args.lambda_st) < 0 or args.lr <= 0:
+        parser.error("Require nonnegative penalty values and a positive learning rate.")
+    device = torch.device(args.device)
+    if device.type not in ("cpu", "cuda"):
+        parser.error("Supported devices are cpu and cuda.")
+    if device.type == "cuda" and not torch.cuda.is_available():
+        print("CUDA is unavailable. Using CPU.", flush=True)
+        device = torch.device("cpu")
+    dataset, num_classes = load_dataset(args.data)
+    base_data = dataset[0].clone()
+    base_data.x = F.normalize(base_data.x.float(), p=2, dim=-1)
+    base_data.y = base_data.y.reshape(-1).long()
+    from torch_geometric.utils import coalesce
+
+    base_data.edge_index = coalesce(base_data.edge_index.long(), num_nodes=base_data.x.size(0))
+    count = split_count(base_data)
+    indices = list(range(count)) if args.all_splits else [args.split_idx]
+    modality = "feature_only" if args.feature_only else "label_aware"
+    output_dir = Path(args.output_dir) / f"data_{args.data}_{modality}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for split_idx in indices:
+        data = select_split(base_data, split_idx).to(device)
+        results.append(train_one_split(data, num_classes, split_idx, args, output_dir))
+        del data
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    scores = np.asarray([result["test_score_percent"] for result in results], dtype=float)
+    summary = {
+        "data_id": args.data,
+        "input_modality": modality,
+        "num_runs": len(results),
+        "test_metric": results[0]["test_metric"],
+        "test_score_mean_percent": float(scores.mean()),
+        "test_score_std_percent": float(scores.std(ddof=1)) if scores.size > 1 else None,
+        "runs": results,
+    }
+    summary_path = output_dir / f"summary_seed_{args.seed}_splits_{'_'.join(map(str, indices))}.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
