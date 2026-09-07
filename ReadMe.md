@@ -1,6 +1,6 @@
 # Sparse Bayesian Message Passing under Structural Uncertainty
 
-<img width="4547" height="1024" alt="Image" src="https://github.com/user-attachments/assets/525f9306-4647-4483-85df-fda2909976ff" />
+<img width="4547" height="1024" alt="Image" src="https://github.com/user-attachments/assets/92befa69-d4d1-4ebe-b2ba-ef066c254192" />
 
 ## Overview
 
