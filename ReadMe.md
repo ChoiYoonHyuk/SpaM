@@ -1,10 +1,10 @@
-# Sparse Bayesian Message Passing under Structural Uncertainty
+# Sparse Tri-State Message Passing with Predictive Marginalization
 
 <img width="4547" height="1024" alt="Image" src="https://github.com/user-attachments/assets/92befa69-d4d1-4ebe-b2ba-ef066c254192" />
 
 ## Overview
 
-We propose **Sparse Signed Message Passing via Predictive Marginalization (SpaM)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
+We propose **Sparse Tri-State Message Passing with Predictive Marginalization (SpaM)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
 
 ## Execution
 
