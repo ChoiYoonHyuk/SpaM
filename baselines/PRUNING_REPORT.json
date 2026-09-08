@@ -1,0 +1,246 @@
+{
+  "original_lines_per_baseline": 2244,
+  "baseline_count": 17,
+  "verification": {
+    "compileall": "passed",
+    "synthetic_one_epoch_self_tests": "17/17 passed",
+    "unused_top_level_definitions": "none detected",
+    "unused_imports": "none detected",
+    "local_python_imports": "none in baseline files"
+  },
+  "files": [
+    {
+      "file": "acm_gcn.py",
+      "lines": 800,
+      "bytes": 28614,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "ACMGraphConv",
+        "ACMGCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "all_baselines.py",
+      "lines": 133,
+      "bytes": 4215,
+      "top_level_classes": []
+    },
+    {
+      "file": "auto_heg.py",
+      "lines": 1145,
+      "bytes": 42303,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "SparseGCNLayer",
+        "SparseGATLayer",
+        "MeanSAGELayer",
+        "GINLayer",
+        "ChebLayer",
+        "GCNIIConv",
+        "GPRPropagation",
+        "FALayer",
+        "AutoOperation",
+        "AutoHeGModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "cgnn.py",
+      "lines": 850,
+      "bytes": 30833,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "CGNNLayer",
+        "CGNNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "fagcn.py",
+      "lines": 761,
+      "bytes": 26500,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "FALayer",
+        "FAGCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gat.py",
+      "lines": 855,
+      "bytes": 30439,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "SparseGATLayer",
+        "GATModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gbk_gnn.py",
+      "lines": 795,
+      "bytes": 28319,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "GBKConv",
+        "GBKGNNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gcn.py",
+      "lines": 833,
+      "bytes": 29623,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "SparseGCNLayer",
+        "GCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gcnii.py",
+      "lines": 789,
+      "bytes": 28042,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "GCNIIConv",
+        "GCNIIModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "geom_gcn.py",
+      "lines": 825,
+      "bytes": 29340,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "GeomRelationLayer",
+        "GeomGCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gesc.py",
+      "lines": 1001,
+      "bytes": 38671,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "ComplexLinear",
+        "ComplexModReLU",
+        "ComplexNodeNorm",
+        "GESCLayer",
+        "GESCModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "glognn.py",
+      "lines": 823,
+      "bytes": 29914,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "GloGNNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "gprgnn.py",
+      "lines": 797,
+      "bytes": 28302,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "GPRPropagation",
+        "GPRGNNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "h2gcn.py",
+      "lines": 818,
+      "bytes": 28708,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "H2GCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "l2dgcn.py",
+      "lines": 883,
+      "bytes": 33268,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "L2DGCNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "mlp.py",
+      "lines": 739,
+      "bytes": 25500,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "MLPNet",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "pcnet.py",
+      "lines": 822,
+      "bytes": 30108,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "PCPropagation",
+        "PCNetModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    },
+    {
+      "file": "tfe_gnn.py",
+      "lines": 768,
+      "bytes": 27123,
+      "top_level_classes": [
+        "GraphData",
+        "FilteredWikipediaDataset",
+        "TFEGNNModel",
+        "TrainConfig",
+        "TrainOutcome"
+      ]
+    }
+  ]
+}
