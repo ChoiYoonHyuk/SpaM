@@ -345,16 +345,16 @@ def select_split(data: Any, split_idx: int):
     if not 0 <= split_idx < count:
         raise ValueError(f"split_idx must be between 0 and {count - 1}.")
     selected = data.clone()
-    masks = []
-    for name in ("train_mask", "val_mask", "test_mask"):
-        mask = getattr(selected, name)
-        mask = mask if mask.ndim == 1 else mask[:, split_idx]
-        if mask.numel() != selected.x.size(0) or not bool(mask.any()):
-            raise ValueError(f"{name} must be nonempty and aligned with node features.")
-        setattr(selected, name, mask)
-        masks.append(mask)
-    if bool(((masks[0] & masks[1]) | (masks[0] & masks[2]) | (masks[1] & masks[2])).any()):
-        raise ValueError("Training, validation, and test masks must be disjoint.")
+    generator = torch.Generator().manual_seed(split_idx)
+    perm = torch.randperm(selected.x.size(0), generator=generator)
+    train_end = int(selected.x.size(0) * 0.10)
+    val_end = int(selected.x.size(0) * 0.55)
+    selected.train_mask = torch.zeros(selected.x.size(0), dtype=torch.bool)
+    selected.val_mask = torch.zeros(selected.x.size(0), dtype=torch.bool)
+    selected.test_mask = torch.zeros(selected.x.size(0), dtype=torch.bool)
+    selected.train_mask[perm[:train_end]] = True
+    selected.val_mask[perm[train_end:val_end]] = True
+    selected.test_mask[perm[val_end:]] = True
     return selected
 
 
