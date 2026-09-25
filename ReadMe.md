@@ -1,10 +1,10 @@
-# Sparse Tri-State Message Passing with Predictive Marginalization
+# Persistent Tri-State Message Passing
 
 <img width="4547" height="1024" alt="Image" src="https://github.com/user-attachments/assets/9c40f0e1-5ec3-4acf-8d3a-7d70566d96cb" />
 
 ## Overview
 
-We propose **Sparse Tri-State Message Passing with Predictive Marginalization (SpaM)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
+We propose **Persistent Tri-State Message Passing (P3MP)** that performs local sparse coding over neighbors and aggregates positive/negative relations through sign-aware channels, yielding robust node representations under noisy and heterophilic edges. 
 
 ## Execution
 
